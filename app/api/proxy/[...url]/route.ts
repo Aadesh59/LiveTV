@@ -105,5 +105,6 @@ export async function GET(
   }
 }
 
-// Use Vercel Edge Runtime: no cold starts, runs globally near users
-export const runtime = 'edge';
+// NOTE: Do NOT use Edge runtime here — it blocks outbound http:// requests.
+// The default Node.js serverless runtime supports plain HTTP upstream fetches.
+export const maxDuration = 30; // Allow up to 30s for slow stream servers (Vercel Pro)
