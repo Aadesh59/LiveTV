@@ -1,103 +1,108 @@
-import Image from "next/image";
+"use client";
+
+import { useMemo, useEffect, useState } from "react";
+import { Navbar } from "@/components/layout/Navbar";
+import { BottomNav } from "@/components/layout/BottomNav";
+import { CategoryTabs } from "@/components/channel/CategoryTabs";
+import { ChannelGrid } from "@/components/channel/ChannelGrid";
+import { VideoPlayer } from "@/components/player/VideoPlayer";
+import { channels } from "@/data/channels";
+import { useLiveTVStore } from "@/store/useLiveTVStore";
+import { Search, Clock } from "lucide-react";
+import { ChannelCard } from "@/components/channel/ChannelCard";
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const { activeCategory, searchTerm, setSearchTerm, favorites, recentlyWatched, currentChannel } = useLiveTVStore();
+  const [mounted, setMounted] = useState(false);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const filteredChannels = useMemo(() => {
+    let result = channels;
+
+    if (activeCategory === "Favorites") {
+      result = channels.filter((c) => favorites.includes(c.id));
+    } else if (activeCategory !== "All") {
+      result = channels.filter((c) => c.category === activeCategory);
+    }
+
+    if (searchTerm) {
+      const lowerTerm = searchTerm.toLowerCase();
+      result = result.filter(
+        (c) => c.name.toLowerCase().includes(lowerTerm) || c.category.toLowerCase().includes(lowerTerm)
+      );
+    }
+
+    return result;
+  }, [activeCategory, searchTerm, favorites]);
+
+  // Avoid hydration mismatch by not rendering main content until mounted
+  if (!mounted) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-950">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-zinc-800 border-t-red-600"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-screen flex-col bg-zinc-950 pb-20 md:pb-0">
+      <Navbar />
+      
+      {/* Mobile Search */}
+      <div className="px-4 py-3 md:hidden">
+        <div className="relative flex items-center">
+          <Search className="absolute left-3 text-zinc-500" size={18} />
+          <input
+            type="text"
+            placeholder="Search channels..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full rounded-full border border-zinc-800 bg-zinc-900/50 py-2 pl-10 pr-4 text-sm text-zinc-100 placeholder-zinc-500 focus:border-red-500 focus:outline-none"
+          />
         </div>
+      </div>
+
+      <CategoryTabs />
+
+      <main className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8">
+        
+        {/* Recently Watched Row */}
+        {recentlyWatched.length > 0 && activeCategory === "All" && !searchTerm && (
+          <div className="mb-8">
+            <div className="mb-4 flex items-center gap-2">
+              <Clock size={20} className="text-red-500" />
+              <h2 className="text-xl font-bold text-white">Continue Watching</h2>
+            </div>
+            <div className="no-scrollbar flex gap-4 overflow-x-auto pb-4">
+              {recentlyWatched.map((channel) => (
+                <div key={`recent-${channel.id}`} className="min-w-[200px] md:min-w-[240px]">
+                  <ChannelCard channel={channel} />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-xl font-bold text-white">
+            {searchTerm 
+              ? `Search Results for "${searchTerm}"` 
+              : activeCategory === "Favorites" 
+                ? "Your Favorite Channels" 
+                : `${activeCategory} Channels`}
+          </h2>
+          <span className="text-sm text-zinc-500">{filteredChannels.length} channels</span>
+        </div>
+
+        <ChannelGrid channels={filteredChannels} />
       </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+
+      <BottomNav />
+      
+      {currentChannel && <VideoPlayer />}
     </div>
   );
 }
