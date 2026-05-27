@@ -79,11 +79,19 @@ export async function GET(
         return `/api/proxy/${withoutScheme}`;
       });
 
+      // HLS manifests must not be cached (they change every few seconds)
+      headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+
       return new NextResponse(rewritten, {
         status: response.status,
         statusText: response.statusText,
         headers,
       });
+    }
+
+    // Cache .ts video segments briefly — they are immutable once written
+    if (targetUrl.endsWith('.ts')) {
+      headers.set('Cache-Control', 'public, max-age=10, stale-while-revalidate=5');
     }
 
     return new NextResponse(response.body, {
@@ -96,3 +104,6 @@ export async function GET(
     return new NextResponse('Proxy error', { status: 500 });
   }
 }
+
+// Use Vercel Edge Runtime: no cold starts, runs globally near users
+export const runtime = 'edge';

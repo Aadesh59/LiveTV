@@ -9,6 +9,7 @@ export function VideoPlayer() {
   const { currentChannel, playChannel } = useLiveTVStore();
   const [error, setError] = useState(false);
   const [isBuffering, setIsBuffering] = useState(true);
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -21,54 +22,110 @@ export function VideoPlayer() {
     setIsBuffering(true);
   }, [currentChannel, playChannel]);
 
-  // Shaka Player Setup
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !currentChannel) return;
 
     setIsBuffering(true);
-    let player: { destroy: () => Promise<void> } | null = null;
+    setError(false);
 
-    // Import shaka dynamically to prevent SSR errors (navigator is not defined)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let playerInstance: any = null;
+    let destroyed = false;
+
     import("shaka-player").then((shakaModule) => {
-      const shaka = shakaModule.default || shakaModule;
+      if (destroyed) return;
 
+      const shaka = shakaModule.default || shakaModule;
       shaka.polyfill.installAll();
 
-      if (shaka.Player.isBrowserSupported()) {
-        const shakaPlayer = new shaka.Player(video);
-        player = shakaPlayer;
-
-        shakaPlayer.addEventListener("error", (event: Event) => {
-          const shakaEvent = event as unknown as { detail: unknown };
-          console.error("Shaka Player Error", shakaEvent.detail);
-          setError(true);
-        });
-
-        let loadUrl = currentChannel.url;
-        if (loadUrl.startsWith("http://")) {
-          loadUrl = `/api/proxy/${loadUrl.substring(7)}`;
-        }
-
-        shakaPlayer
-          .load(loadUrl)
-          .then(() => {
-            setIsBuffering(false);
-            video.play().catch((e) => console.error("Autoplay prevented:", e));
-          })
-          .catch((e) => {
-            console.error("Error loading video", e);
-            setError(true);
-          });
-      } else {
+      if (!shaka.Player.isBrowserSupported()) {
         console.error("Browser not supported by Shaka Player");
         setError(true);
+        return;
       }
+
+      const shakaPlayer = new shaka.Player(video);
+      playerInstance = shakaPlayer;
+
+      // Tuned for live HLS streams over a proxy/CDN
+      shakaPlayer.configure({
+        manifest: {
+          retryParameters: {
+            maxAttempts: 4,
+            baseDelay: 500,
+            backoffFactor: 1.5,
+            timeout: 15000,
+          },
+        },
+        streaming: {
+          bufferingGoal: 20,          // Buffer 20s ahead before considering it "playing"
+          rebufferingGoal: 5,         // Only re-buffer after 5s of empty buffer
+          bufferBehind: 30,           // Keep 30s of past content in memory
+          lowLatencyMode: false,      // Disable low-latency — it hurts buffering on proxied streams
+          retryParameters: {
+            maxAttempts: 4,
+            baseDelay: 500,
+            backoffFactor: 1.5,
+            timeout: 15000,
+          },
+        },
+      });
+
+      shakaPlayer.addEventListener("error", (event: Event) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const shakaEvent = event as unknown as { detail: any };
+        console.error("Shaka Player Internal Error:", shakaEvent.detail);
+        // severity 2 = CRITICAL (playback cannot continue)
+        if (shakaEvent.detail?.severity === 2) {
+          setError(true);
+        }
+      });
+
+      const rawUrl = currentChannel.url;
+      const needsProxy = rawUrl.startsWith("http://");
+      const proxyUrl = needsProxy
+        ? `/api/proxy/${rawUrl.substring(7)}`
+        : rawUrl;
+
+      shakaPlayer
+        .load(proxyUrl)
+        .then(() => {
+          if (destroyed) return;
+          setIsBuffering(false);
+          video.play().catch((e) => console.warn("Autoplay prevented:", e));
+        })
+        .catch((firstError: unknown) => {
+          if (destroyed) return;
+          console.warn("Proxy stream failed, trying direct URL:", firstError);
+
+          // Fallback: attempt the raw URL directly (works if the stream
+          // server allows cross-origin or the user is on the same network)
+          if (needsProxy) {
+            shakaPlayer
+              .load(rawUrl)
+              .then(() => {
+                if (destroyed) return;
+                setIsBuffering(false);
+                video.play().catch(() => {});
+              })
+              .catch((fallbackError: unknown) => {
+                if (destroyed) return;
+                console.error("Direct fallback also failed:", fallbackError);
+                setError(true);
+              });
+          } else {
+            setError(true);
+          }
+        });
     });
 
     return () => {
-      if (player) {
-        player.destroy();
+      destroyed = true;
+      if (playerInstance) {
+        playerInstance
+          .destroy()
+          .catch((e: Error) => console.warn("Player teardown error:", e));
       }
     };
   }, [currentChannel]);
@@ -80,13 +137,16 @@ export function VideoPlayer() {
       ref={containerRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black"
     >
-      {/* Loading/Buffering State */}
+      {/* Loading / Buffering State */}
       {isBuffering && !error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/80 z-10 pointer-events-none">
           <Loader2 size={48} className="animate-spin text-red-600 mb-4" />
           <h2 className="text-xl font-bold text-white">
             Tuning to {currentChannel.name}...
           </h2>
+          <p className="text-zinc-400 mt-2 text-sm">
+            Buffering live stream, please wait…
+          </p>
         </div>
       )}
 
@@ -131,7 +191,7 @@ export function VideoPlayer() {
         onWaiting={() => setIsBuffering(true)}
       />
 
-      {/* Simple Close Button floating above the native player */}
+      {/* Close Button */}
       <button
         onClick={() => playChannel(null)}
         className="absolute top-4 right-4 z-30 flex h-10 w-10 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur-md hover:bg-red-600 transition-colors"
