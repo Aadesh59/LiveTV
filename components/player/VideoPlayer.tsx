@@ -9,7 +9,6 @@ export function VideoPlayer() {
   const { currentChannel, playChannel } = useLiveTVStore();
   const [error, setError] = useState(false);
   const [isBuffering, setIsBuffering] = useState(true);
-  
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -33,7 +32,7 @@ export function VideoPlayer() {
     // Import shaka dynamically to prevent SSR errors (navigator is not defined)
     import("shaka-player").then((shakaModule) => {
       const shaka = shakaModule.default || shakaModule;
-      
+
       shaka.polyfill.installAll();
 
       if (shaka.Player.isBrowserSupported()) {
@@ -51,7 +50,8 @@ export function VideoPlayer() {
           loadUrl = `/api/proxy/${loadUrl.substring(7)}`;
         }
 
-        shakaPlayer.load(loadUrl)
+        shakaPlayer
+          .load(loadUrl)
           .then(() => {
             setIsBuffering(false);
             video.play().catch((e) => console.error("Autoplay prevented:", e));
@@ -84,7 +84,9 @@ export function VideoPlayer() {
       {isBuffering && !error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/80 z-10 pointer-events-none">
           <Loader2 size={48} className="animate-spin text-red-600 mb-4" />
-          <h2 className="text-xl font-bold text-white">Tuning to {currentChannel.name}...</h2>
+          <h2 className="text-xl font-bold text-white">
+            Tuning to {currentChannel.name}...
+          </h2>
         </div>
       )}
 
@@ -94,9 +96,12 @@ export function VideoPlayer() {
           <div className="rounded-full bg-red-600/20 p-4 mb-4">
             <span className="text-4xl">⚠️</span>
           </div>
-          <h2 className="text-xl font-bold text-white mb-2">Stream Unavailable</h2>
+          <h2 className="text-xl font-bold text-white mb-2">
+            Stream Unavailable
+          </h2>
           <p className="text-zinc-400 mb-6 text-center max-w-md">
-            The stream for {currentChannel.name} is currently offline or unplayable.
+            The stream for {currentChannel.name} is currently offline or
+            unplayable.
           </p>
           <div className="flex gap-4">
             <button
