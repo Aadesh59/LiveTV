@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import Hls from "hls.js";
 import { useLiveTVStore } from "@/store/useLiveTVStore";
 import { channels } from "@/data/channels";
 import { Loader2 } from "lucide-react";
@@ -23,59 +22,53 @@ export function VideoPlayer() {
     setIsBuffering(true);
   }, [currentChannel, playChannel]);
 
-  // Native HLS Setup
+  // Shaka Player Setup
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !currentChannel) return;
 
     setIsBuffering(true);
-    let hls: Hls | null = null;
+    let player: { destroy: () => Promise<void> } | null = null;
 
-    if (Hls.isSupported()) {
-      hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-      });
+    // Import shaka dynamically to prevent SSR errors (navigator is not defined)
+    import("shaka-player").then((shakaModule) => {
+      const shaka = shakaModule.default || shakaModule;
+      
+      shaka.polyfill.installAll();
 
-      hls.loadSource(currentChannel.url);
-      hls.attachMedia(video);
+      if (shaka.Player.isBrowserSupported()) {
+        const shakaPlayer = new shaka.Player(video);
+        player = shakaPlayer;
 
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        setIsBuffering(false);
-        video.play().catch((e) => console.error("Autoplay prevented:", e));
-      });
+        shakaPlayer.addEventListener("error", (event: Event) => {
+          const shakaEvent = event as unknown as { detail: unknown };
+          console.error("Shaka Player Error", shakaEvent.detail);
+          setError(true);
+        });
 
-      hls.on(Hls.Events.ERROR, (event, data) => {
-        if (data.fatal) {
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              hls?.startLoad();
-              break;
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              hls?.recoverMediaError();
-              break;
-            default:
-              setError(true);
-              hls?.destroy();
-              break;
-          }
+        let loadUrl = currentChannel.url;
+        if (loadUrl.startsWith("http://")) {
+          loadUrl = `/api/proxy/${loadUrl.substring(7)}`;
         }
-      });
-    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      // Safari fallback
-      video.src = currentChannel.url;
-      video.addEventListener("loadedmetadata", () => {
-        setIsBuffering(false);
-        video.play().catch((e) => console.error("Autoplay prevented:", e));
-      });
-      video.addEventListener("error", () => {
+
+        shakaPlayer.load(loadUrl)
+          .then(() => {
+            setIsBuffering(false);
+            video.play().catch((e) => console.error("Autoplay prevented:", e));
+          })
+          .catch((e) => {
+            console.error("Error loading video", e);
+            setError(true);
+          });
+      } else {
+        console.error("Browser not supported by Shaka Player");
         setError(true);
-      });
-    }
+      }
+    });
 
     return () => {
-      if (hls) {
-        hls.destroy();
+      if (player) {
+        player.destroy();
       }
     };
   }, [currentChannel]);
