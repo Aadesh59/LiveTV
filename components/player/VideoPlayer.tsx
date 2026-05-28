@@ -54,28 +54,38 @@ export function VideoPlayer() {
       
       video.src = needsProxy ? proxyUrl : rawUrl;
       video.load();
-      video.play()
-        .then(() => safeSetIsBuffering(false))
-        .catch((e) => {
-          if (destroyed) return;
-          console.warn("[Player] Native proxied playback failed:", e);
-          
-          if (isHttps && needsProxy) {
-            console.error("[Player] Cannot fallback to direct HTTP URL on HTTPS site (Mixed Content).");
-            safeSetError(true);
-            return;
-          }
-
-          console.log("[Player] Trying direct URL fallback...");
-          video.src = rawUrl;
-          video.load();
-          video.play()
-            .then(() => safeSetIsBuffering(false))
-            .catch((err) => {
-              console.error("[Player] All native playback attempts failed:", err);
+      const playPromise = video.play();
+      if (playPromise && typeof playPromise.then === "function") {
+        playPromise
+          .then(() => safeSetIsBuffering(false))
+          .catch((e: unknown) => {
+            if (destroyed) return;
+            console.warn("[Player] Native proxied playback failed:", e);
+            
+            if (isHttps && needsProxy) {
+              console.error("[Player] Cannot fallback to direct HTTP URL on HTTPS site (Mixed Content).");
               safeSetError(true);
-            });
-        });
+              return;
+            }
+
+            console.log("[Player] Trying direct URL fallback...");
+            video.src = rawUrl;
+            video.load();
+            const fallbackPromise = video.play();
+            if (fallbackPromise && typeof fallbackPromise.then === "function") {
+              fallbackPromise
+                .then(() => safeSetIsBuffering(false))
+                .catch((err: unknown) => {
+                  console.error("[Player] All native playback attempts failed:", err);
+                  safeSetError(true);
+                });
+            } else {
+              safeSetIsBuffering(false);
+            }
+          });
+      } else {
+        safeSetIsBuffering(false);
+      }
     };
 
     const initializeRawTsPlayer = async () => {
@@ -106,14 +116,19 @@ export function VideoPlayer() {
           mpegtsPlayer.on(mpegts.Events.ERROR, (errorType, errorDetail, errorInfo) => {
             console.error("[Player] mpegts error:", errorType, errorDetail, errorInfo);
             if (!destroyed) {
-              try { mpegtsPlayer.destroy(); } catch (e) {}
+              try { mpegtsPlayer.destroy(); } catch {}
               setupNativeFallback();
             }
           });
 
-          mpegtsPlayer.play()
-            .then(() => safeSetIsBuffering(false))
-            .catch((e) => console.warn("[Player] mpegts autoplay blocked:", e));
+          const mpegtsPlayPromise = mpegtsPlayer.play();
+          if (mpegtsPlayPromise && typeof mpegtsPlayPromise.then === "function") {
+            mpegtsPlayPromise
+              .then(() => safeSetIsBuffering(false))
+              .catch((e: unknown) => console.warn("[Player] mpegts autoplay blocked:", e));
+          } else {
+            safeSetIsBuffering(false);
+          }
 
           activePlayer = {
             destroy: () => mpegtsPlayer.destroy(),
@@ -168,6 +183,19 @@ export function VideoPlayer() {
           },
         });
 
+        const detachAndFallback = () => {
+          try {
+            const detachRes = shakaPlayer.detach() as unknown;
+            if (detachRes && typeof (detachRes as { then?: unknown }).then === "function") {
+              (detachRes as Promise<void>).then(setupNativeFallback).catch(() => safeSetError(true));
+            } else {
+              setupNativeFallback();
+            }
+          } catch {
+            safeSetError(true);
+          }
+        };
+
         shakaPlayer.addEventListener("error", (event: Event) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const shakaEvent = event as unknown as { detail: any };
@@ -175,9 +203,7 @@ export function VideoPlayer() {
           
           if (shakaEvent.detail?.severity === 2 && !destroyed) {
             console.log("[Player] Shaka critical error, detaching and trying fallback...");
-            shakaPlayer.detach()
-              .then(setupNativeFallback)
-              .catch(() => safeSetError(true));
+            detachAndFallback();
           }
         });
 
@@ -185,15 +211,18 @@ export function VideoPlayer() {
           .then(() => {
             if (destroyed) return;
             safeSetIsBuffering(false);
-            video.play().catch((e) => console.warn("[Player] Autoplay blocked:", e));
+            const playPromise = video.play();
+            if (playPromise && typeof playPromise.catch === "function") {
+              playPromise.catch((e: unknown) => console.warn("[Player] Autoplay blocked:", e));
+            }
           })
-          .catch((firstError: any) => {
+          .catch((firstError: unknown) => {
             if (destroyed) return;
             console.warn("[Player] Proxy stream failed:", firstError);
 
             if (isHttps && needsProxy) {
               console.error("[Player] Skipping direct HTTP fallback on HTTPS site.");
-              shakaPlayer.detach().then(setupNativeFallback).catch(() => safeSetError(true));
+              detachAndFallback();
               return;
             }
 
@@ -201,12 +230,15 @@ export function VideoPlayer() {
               .then(() => {
                 if (destroyed) return;
                 safeSetIsBuffering(false);
-                video.play().catch(() => {});
+                const playPromise = video.play();
+                if (playPromise && typeof playPromise.catch === "function") {
+                  playPromise.catch(() => {});
+                }
               })
-              .catch((err) => {
+              .catch((err: unknown) => {
                 if (destroyed) return;
                 console.error("[Player] Direct play also failed:", err);
-                shakaPlayer.detach().then(setupNativeFallback).catch(() => safeSetError(true));
+                detachAndFallback();
               });
           });
 
@@ -231,9 +263,14 @@ export function VideoPlayer() {
           if (typeof activePlayer.destroy === "function") {
             activePlayer.destroy();
           } else if (typeof activePlayer.detach === "function") {
-            activePlayer.detach().then(() => activePlayer.destroy());
+            const detachRes = activePlayer.detach() as unknown;
+            if (detachRes && typeof (detachRes as { then?: unknown }).then === "function") {
+              (detachRes as Promise<void>).then(() => activePlayer.destroy());
+            } else {
+              activePlayer.destroy();
+            }
           }
-        } catch (e) {
+        } catch (e: unknown) {
           console.warn("[Player] Teardown warning:", e);
         }
       }

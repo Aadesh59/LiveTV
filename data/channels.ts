@@ -60,8 +60,8 @@ export const channels: Channel[] = [
     isHD: true,
   },
   {
-    id: "Star Sports 1 HD Alt",
-    name: "Star Sports 1 HD Alt",
+    id: "Star Sports 1 HD Alternative",
+    name: "Star Sports 1 HD Alternative",
     logo: "https://i.imgur.com/E5jjKHI.png",
     url: "http://maxotts.maxdigitaltv.com/x-media/C283/master.m3u8",
     category: "Sports",
