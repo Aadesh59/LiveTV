@@ -29,103 +29,218 @@ export function VideoPlayer() {
     setIsBuffering(true);
     setError(false);
 
+    // Keep track of the active player instance for cleanup
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let playerInstance: any = null;
+    let activePlayer: any = null;
     let destroyed = false;
 
-    import("shaka-player").then((shakaModule) => {
+    const safeSetError = (value: boolean) => !destroyed && setError(value);
+    const safeSetIsBuffering = (value: boolean) => !destroyed && setIsBuffering(value);
+
+    const rawUrl = currentChannel.url;
+    // Force proxy for HTTP URLs to prevent Mixed Content blocking on HTTPS deployments
+    const isHttps = typeof window !== "undefined" && window.location.protocol === "https:";
+    const needsProxy = rawUrl.startsWith("http://");
+    const proxyUrl = needsProxy ? `/api/proxy/${rawUrl.substring(7)}` : rawUrl;
+
+    const isRawStream = 
+      rawUrl.includes("/play/") || 
+      rawUrl.endsWith(".ts") || 
+      (!rawUrl.includes(".m3u8") && !rawUrl.includes(".mpd") && !rawUrl.includes("manifest"));
+
+    const setupNativeFallback = () => {
       if (destroyed) return;
+      console.log("[Player] Using native video binding...");
+      
+      video.src = needsProxy ? proxyUrl : rawUrl;
+      video.load();
+      video.play()
+        .then(() => safeSetIsBuffering(false))
+        .catch((e) => {
+          if (destroyed) return;
+          console.warn("[Player] Native proxied playback failed:", e);
+          
+          if (isHttps && needsProxy) {
+            console.error("[Player] Cannot fallback to direct HTTP URL on HTTPS site (Mixed Content).");
+            safeSetError(true);
+            return;
+          }
 
-      const shaka = shakaModule.default || shakaModule;
-      shaka.polyfill.installAll();
+          console.log("[Player] Trying direct URL fallback...");
+          video.src = rawUrl;
+          video.load();
+          video.play()
+            .then(() => safeSetIsBuffering(false))
+            .catch((err) => {
+              console.error("[Player] All native playback attempts failed:", err);
+              safeSetError(true);
+            });
+        });
+    };
 
-      if (!shaka.Player.isBrowserSupported()) {
-        console.error("Browser not supported by Shaka Player");
-        setError(true);
-        return;
-      }
+    const initializeRawTsPlayer = async () => {
+      try {
+        const mpegtsModule = await import("mpegts.js");
+        if (destroyed) return;
+        
+        const mpegts = mpegtsModule.default || mpegtsModule;
 
-      const shakaPlayer = new shaka.Player(video);
-      playerInstance = shakaPlayer;
+        if (mpegts.getFeatureList().mseLivePlayback) {
+          console.log("[Player] Initializing mpegts.js for raw progressive TS stream...");
+          const mpegtsPlayer = mpegts.createPlayer({
+            type: 'mse',
+            isLive: true,
+            url: needsProxy ? proxyUrl : rawUrl,
+          }, {
+            enableWorker: true,
+            lazyLoadMaxDuration: 3 * 60,
+            seekType: 'range',
+            liveBufferLatencyChasing: true,
+            liveBufferLatencyMaxLatency: 3,
+            liveBufferLatencyMinRemain: 1,
+          });
 
-      // Tuned for live HLS streams over a proxy/CDN
-      shakaPlayer.configure({
-        manifest: {
-          retryParameters: {
-            maxAttempts: 4,
-            baseDelay: 500,
-            backoffFactor: 1.5,
-            timeout: 15000,
-          },
-        },
-        streaming: {
-          bufferingGoal: 20,          // Buffer 20s ahead before considering it "playing"
-          rebufferingGoal: 5,         // Only re-buffer after 5s of empty buffer
-          bufferBehind: 30,           // Keep 30s of past content in memory
-          lowLatencyMode: false,      // Disable low-latency — it hurts buffering on proxied streams
-          retryParameters: {
-            maxAttempts: 4,
-            baseDelay: 500,
-            backoffFactor: 1.5,
-            timeout: 15000,
-          },
-        },
-      });
+          mpegtsPlayer.attachMediaElement(video);
+          mpegtsPlayer.load();
+          
+          mpegtsPlayer.on(mpegts.Events.ERROR, (errorType, errorDetail, errorInfo) => {
+            console.error("[Player] mpegts error:", errorType, errorDetail, errorInfo);
+            if (!destroyed) {
+              try { mpegtsPlayer.destroy(); } catch (e) {}
+              setupNativeFallback();
+            }
+          });
 
-      shakaPlayer.addEventListener("error", (event: Event) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const shakaEvent = event as unknown as { detail: any };
-        console.error("Shaka Player Internal Error:", shakaEvent.detail);
-        // severity 2 = CRITICAL (playback cannot continue)
-        if (shakaEvent.detail?.severity === 2) {
-          setError(true);
+          mpegtsPlayer.play()
+            .then(() => safeSetIsBuffering(false))
+            .catch((e) => console.warn("[Player] mpegts autoplay blocked:", e));
+
+          activePlayer = {
+            destroy: () => mpegtsPlayer.destroy(),
+          };
+        } else {
+          console.log("[Player] mpegts.js unsupported on this browser (e.g., iOS). Using native.");
+          setupNativeFallback();
         }
-      });
+      } catch (err) {
+        console.error("[Player] Failed to load mpegts.js module:", err);
+        setupNativeFallback();
+      }
+    };
 
-      const rawUrl = currentChannel.url;
-      const needsProxy = rawUrl.startsWith("http://");
-      const proxyUrl = needsProxy
-        ? `/api/proxy/${rawUrl.substring(7)}`
-        : rawUrl;
+    const initializeShakaPlayer = async () => {
+      try {
+        const shakaModule = await import("shaka-player");
+        if (destroyed) return;
 
-      shakaPlayer
-        .load(proxyUrl)
-        .then(() => {
-          if (destroyed) return;
-          setIsBuffering(false);
-          video.play().catch((e) => console.warn("Autoplay prevented:", e));
-        })
-        .catch((firstError: unknown) => {
-          if (destroyed) return;
-          console.warn("Proxy stream failed, trying direct URL:", firstError);
+        const shaka = shakaModule.default || shakaModule;
+        shaka.polyfill.installAll();
 
-          // Fallback: attempt the raw URL directly (works if the stream
-          // server allows cross-origin or the user is on the same network)
-          if (needsProxy) {
-            shakaPlayer
-              .load(rawUrl)
-              .then(() => {
-                if (destroyed) return;
-                setIsBuffering(false);
-                video.play().catch(() => {});
-              })
-              .catch((fallbackError: unknown) => {
-                if (destroyed) return;
-                console.error("Direct fallback also failed:", fallbackError);
-                setError(true);
-              });
-          } else {
-            setError(true);
+        if (!shaka.Player.isBrowserSupported()) {
+          console.error("[Player] Browser not supported by Shaka Player");
+          setupNativeFallback();
+          return;
+        }
+
+        const shakaPlayer = new shaka.Player(video);
+        activePlayer = shakaPlayer;
+
+        shakaPlayer.configure({
+          manifest: {
+            retryParameters: {
+              maxAttempts: 2,
+              baseDelay: 500,
+              backoffFactor: 2,
+              timeout: 5000,
+            },
+          },
+          streaming: {
+            bufferingGoal: 2,
+            rebufferingGoal: 1,
+            bufferBehind: 10,
+            lowLatencyMode: true,
+            retryParameters: {
+              maxAttempts: 2,
+              baseDelay: 500,
+              backoffFactor: 2,
+              timeout: 5000,
+            },
+          },
+        });
+
+        shakaPlayer.addEventListener("error", (event: Event) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const shakaEvent = event as unknown as { detail: any };
+          console.error("[Player] Shaka Player error:", shakaEvent.detail);
+          
+          if (shakaEvent.detail?.severity === 2 && !destroyed) {
+            console.log("[Player] Shaka critical error, detaching and trying fallback...");
+            shakaPlayer.detach()
+              .then(setupNativeFallback)
+              .catch(() => safeSetError(true));
           }
         });
-    });
+
+        shakaPlayer.load(proxyUrl)
+          .then(() => {
+            if (destroyed) return;
+            safeSetIsBuffering(false);
+            video.play().catch((e) => console.warn("[Player] Autoplay blocked:", e));
+          })
+          .catch((firstError: any) => {
+            if (destroyed) return;
+            console.warn("[Player] Proxy stream failed:", firstError);
+
+            if (isHttps && needsProxy) {
+              console.error("[Player] Skipping direct HTTP fallback on HTTPS site.");
+              shakaPlayer.detach().then(setupNativeFallback).catch(() => safeSetError(true));
+              return;
+            }
+
+            shakaPlayer.load(rawUrl)
+              .then(() => {
+                if (destroyed) return;
+                safeSetIsBuffering(false);
+                video.play().catch(() => {});
+              })
+              .catch((err) => {
+                if (destroyed) return;
+                console.error("[Player] Direct play also failed:", err);
+                shakaPlayer.detach().then(setupNativeFallback).catch(() => safeSetError(true));
+              });
+          });
+
+      } catch (err) {
+        console.error("[Player] Failed to load Shaka Player module:", err);
+        setupNativeFallback();
+      }
+    };
+
+    if (isRawStream) {
+      console.log("[Player] Raw stream detected. Bypassing Shaka Player.");
+      initializeRawTsPlayer();
+    } else {
+      console.log("[Player] Standard manifest detected. Using Shaka Player.");
+      initializeShakaPlayer();
+    }
 
     return () => {
       destroyed = true;
-      if (playerInstance) {
-        playerInstance
-          .destroy()
-          .catch((e: Error) => console.warn("Player teardown error:", e));
+      if (activePlayer) {
+        try {
+          if (typeof activePlayer.destroy === "function") {
+            activePlayer.destroy();
+          } else if (typeof activePlayer.detach === "function") {
+            activePlayer.detach().then(() => activePlayer.destroy());
+          }
+        } catch (e) {
+          console.warn("[Player] Teardown warning:", e);
+        }
+      }
+      if (video) {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
       }
     };
   }, [currentChannel]);
